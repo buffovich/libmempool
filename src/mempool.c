@@ -1,6 +1,9 @@
 #include <mempool.h>
 
 #include <stdlib.h>
+#include <stdalign.h>
+#include <string.h>
+#include <strings.h>
 #include <assert.h>
 #include <limits.h>
 
@@ -23,11 +26,14 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	assert( nslots <= SLOTS_NUM );
 	
 	// allocating slab with SLOTS_NUM slots
-	slab_t **ret;
+	slab_t **ret = NULL;
 
-	posix_memalign( ret,
-		SLAB_ALIGNMENT,
-		cache->header_sz + cache->blk_sz * nslots
+	// TODO: handle errors
+	assert(
+		posix_memalign( ( void** ) ret,
+			SLAB_ALIGNMENT,
+			cache->header_sz + cache->blk_sz * nslots
+		) == 0
 	);
 
 	memset( *ret, 0, sizeof( slab_t ) );
@@ -36,8 +42,9 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	if( nslots < SLOTS_NUM )
 		( *ret )->map >>= ( SLOTS_NUM - nslots );
 
-	unsigned char *cur = *ret + cache->header_sz + cache->blk_sz - 1;
-	for( unsigned char cyc = 0; cur < nslots; ++cyc, cur += cache->blk_sz )
+	unsigned char *cur = ( ( unsigned char * ) *ret ) +
+		cache->header_sz + cache->blk_sz - 1;
+	for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
 		*cur = cyc;
 
 	return *ret;
@@ -163,7 +170,8 @@ static inline counter_t _dec_refcount( cache_t *cache, void *blk ) {
 static inline void *_get_block( cache_t *c ) {
 	assert( c->head->map );
 
-	int slotn = ffs( ( int ) cache->head->map ) - 1;
+	slab_t *s = c->head;
+	int slotn = ffs( ( int ) s->map ) - 1;
 	s->map &= ~( 1u << slotn );
 	
 	return ( ( ( char *) s ) + c->header_sz + ( c->blk_sz * slotn ) );
@@ -222,9 +230,10 @@ void *pool_object_put( cache_t *cache, void *obj ) {
 	if( ( !( cache->options & SLAB_REFERABLE ) ) ||
 		( !_dec_refcount( cache, obj ) )
 	) {
-		unsigned int pos = ( ( ( unsigned char* ) obj ) + cache->blk_sz - 1 );
-		slab_t *cur = ( ( unsigned char* ) obj ) - cache->blk_sz * pos -
-			cache->header_sz;
+		unsigned int pos = *( ( ( unsigned char* ) obj ) + cache->blk_sz - 1 );
+		slab_t *cur = ( slab_t* ) (
+			( ( unsigned char* ) obj ) - cache->blk_sz * pos - cache->header_sz
+		);
 
 		if( ( ! cur->map ) && ( cur != cache->head ) ) {
 			cur->prev->next = cur->next;

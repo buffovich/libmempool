@@ -1,16 +1,21 @@
 #ifndef LIBMEMPOOL
 #define LIBMEMPOOL
 
+#define _POSIX_C_SOURCE 201312L
+#define _BSD_SOURCE 1
+
+#include <stdlib.h>
+
 typedef unsigned int blockmap_t;
 
-typedef struct {
-	slab_t *next;
-	slab_t *prev;
+typedef struct _slab_t {
+	struct _slab_t *next;
+	struct _slab_t *prev;
 	// bitmap of free and occupied blocks
 	blockmap_t map;
 } slab_t;
 
-#defined SLAB_REFERABLE 1
+#define SLAB_REFERABLE 1
 
 typedef struct {
 	unsigned int options;
