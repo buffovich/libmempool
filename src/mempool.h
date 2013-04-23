@@ -1,5 +1,5 @@
-#ifndef PCFGM_INTERNAL_ALLOC
-#define PCFGM_INTERNAL_ALLOC
+#ifndef LIBMEMPOOL
+#define LIBMEMPOOL
 
 typedef unsigned int blockmap_t;
 
@@ -24,24 +24,24 @@ typedef struct {
 	slab_t *tail;
 } cache_t;
 
-extern cache_t *_cfg_cache_create( unsigned int options,
+extern cache_t *pool_create( unsigned int options,
 	size_t blk_sz,
 	unsigned int align,
 	unsigned int inum
 );
 
-extern void _cfg_cache_free( cache_t *cache );
+extern void pool_free( cache_t *cache );
 
-extern void _cfg_cache_reap( cache_t *cache );
+extern void pool_reap( cache_t *cache );
 
 // mark object as allocated and increment reference number if the case
-extern void *_cfg_object_alloc( cache_t *cache );
+extern void *pool_object_alloc( cache_t *cache );
 
 // increment reference number if the case
-extern void *_cfg_object_get( cache_t *cache, void *obj );
+extern void *pool_object_get( cache_t *cache, void *obj );
 
 // decrement reference number if the case; when number approaches zero then
 // object will be marked as free
-extern void *_cfg_object_put( cache_t *cache, void *obj );
+extern void *pool_object_put( cache_t *cache, void *obj );
 
 #endif
