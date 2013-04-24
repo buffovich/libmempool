@@ -1,0 +1,4 @@
+MALLOC			= tc_malloc
+POSIX_MEMALIGN	= tc_posix_memalign
+FREE			= tc_free
+ALLOC_HEADER1	= <gperftools/tcmalloc.h>
