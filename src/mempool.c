@@ -222,12 +222,13 @@ void *pool_object_alloc( cache_t *cache ) {
 	if( cache->options & SLAB_REFERABLE )
 		_reset_refcount( cache, ret );
 
-	return NULL;
+	return ret;
 }
 
 // increment reference number if the case
 void *pool_object_get( cache_t *cache, void *obj ) {
 	assert( cache != NULL );
+	assert( obj != NULL );
 	
 	if( cache->options & SLAB_REFERABLE )
 		_inc_refcount( cache, obj );
@@ -239,6 +240,7 @@ void *pool_object_get( cache_t *cache, void *obj ) {
 // object will be marked as free
 void *pool_object_put( cache_t *cache, void *obj ) {
 	assert( cache != NULL );
+	assert( obj != NULL );
 
 	if( ( !( cache->options & SLAB_REFERABLE ) ) ||
 		( !_dec_refcount( cache, obj ) )
