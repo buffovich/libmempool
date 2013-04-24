@@ -38,28 +38,28 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	assert( nslots <= SLOTS_NUM );
 	
 	// allocating slab with SLOTS_NUM slots
-	slab_t **ret = NULL;
+	slab_t *ret = NULL;
 
 	// TODO: handle errors
 	assert(
-		POSIX_MEMALIGN( ( void** ) ret,
+		POSIX_MEMALIGN( ( void** ) &ret,
 			SLAB_ALIGNMENT,
 			cache->header_sz + cache->blk_sz * nslots
 		) == 0
 	);
 
-	memset( *ret, 0, sizeof( slab_t ) );
-	( *ret )->map = EMPTY_MAP;
+	memset( ret, 0, sizeof( slab_t ) );
+	ret->map = EMPTY_MAP;
 
 	if( nslots < SLOTS_NUM )
-		( *ret )->map >>= ( SLOTS_NUM - nslots );
+		ret->map >>= ( SLOTS_NUM - nslots );
 
-	unsigned char *cur = ( ( unsigned char * ) *ret ) +
+	unsigned char *cur = ( ( unsigned char * ) ret ) +
 		cache->header_sz + cache->blk_sz - 1;
 	for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
 		*cur = cyc;
 
-	return *ret;
+	return ret;
 }
 
 static inline size_t _adjust_align( size_t blk_sz, unsigned int align ) {
