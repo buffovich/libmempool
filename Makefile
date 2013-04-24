@@ -1,12 +1,39 @@
-export ROOT	:= $(abspath .)
+ROOT	:= $(abspath .)
 
 include Makefile.config
+
+include config/Makefile.$(BACKEND)
+
+LIBNAME			= libmempool
+CC				?= gcc
+LINKFLAGS		= -Xlinker --no-as-needed -Xlinker -Bdynamic -shared -o $(LIBNAME).so
+FLAGS			= -fPIC -Wall -Wextra
+
+ifdef DEBUG
+DEBUG_FORMAT	?= gdb
+FLAGS			+= -O0 -g -g$(DEBUG_FORMAT)$(DEBUG)
+else
+OPTIMIZE		?= 3
+FLAGS			+= -O$(OPTIMIZE)
+LINKFLAGS		+= -s
+endif
+
+CFLAGS		+= -std=c11 -D MULTITHREADED=$(MULTITHREADED) -D COLORED=$(COLORED) -D MALLOC=$(MALLOC) -D FREE=$(FREE) -D POSIX_MEMALIGN=$(POSIX_MEMALIGN)
+include_ 	= /usr/include $(ROOT)/src
+libdirs_	= /usr/lib
+libs_		=
+
+INCLUDE		+= $(addprefix -I,$(include_))
+LIBS		+= $(addprefix -l,$(libs_))
+LIBDIRS		+= $(addprefix -L,$(subst :, ,$(libdirs_)))
 
 build : src/*.o
 	$(CC) $(LINKFLAGS) $(LIBDIRS) $(LIBS) $(wildcard src/*.o)
 
-src/%.o : $(ROOT)/src/%.c
-	cd src; $(CC) $(CFLAGS) $(FLAGS) $(INCLUDE) -c $^
+src/%.o : $(ROOT)/src/%.c config
+	cd src; $(CC) $(CFLAGS) $(FLAGS) $(INCLUDE) -c $<
+
+config : Makefile.config config/Makefile.$(BACKEND)
 
 doc : FORCE
 	$(DOCTOOL) $(DOCFLAGS) `find src -name *.[c]`
