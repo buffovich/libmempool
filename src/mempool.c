@@ -7,18 +7,6 @@
 #include <assert.h>
 #include <limits.h>
 
-#ifdef HEADER1
-#include ALLOC_HEADER1
-#endif
-
-#ifdef HEADER2
-#include ALLOC_HEADER2
-#endif
-
-#ifdef HEADER3
-#include ALLOC_HEADER3
-#endif
-
 typedef unsigned int counter_t;
 
 #define SLOTS_NUM ( sizeof( blockmap_t ) * 8 )
@@ -42,7 +30,7 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 
 	// TODO: handle errors
 	assert(
-		POSIX_MEMALIGN( ( void** ) &ret,
+		posix_memalign( ( void** ) &ret,
 			SLAB_ALIGNMENT,
 			cache->header_sz + cache->blk_sz * nslots
 		) == 0
@@ -79,7 +67,7 @@ cache_t *pool_create( unsigned int options,
 	assert( blk_sz > 0 );
 	
 	// TODO: think about alternative schemes of allocation
-	cache_t *c = MALLOC( sizeof( cache_t ) );
+	cache_t *c = malloc( sizeof( cache_t ) );
 	memset( c, 0, sizeof( cache_t ) );
 
 	c->options = options;

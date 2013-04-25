@@ -8,8 +8,10 @@
 #define _POSIX_C_SOURCE 201312L
 #define _BSD_SOURCE 1
 
+#include <mempool_config.h>
 // we need size_t type
 #include <stdlib.h>
+
 
 /**
  * Map of blocks in SLAB chunk.

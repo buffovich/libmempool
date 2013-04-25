@@ -1,4 +1,0 @@
-MALLOC			= je_malloc
-POSIX_MEMALIGN	= je_posix_memalign
-FREE			= je_free
-ALLOC_HEADER1	= <jemalloc/jemalloc.h>

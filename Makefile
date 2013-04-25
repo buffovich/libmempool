@@ -6,8 +6,6 @@ include_ 	= /usr/include $(ROOT)/src
 
 include Makefile.config
 
-include config/Makefile.$(BACKEND)
-
 LIBNAME			= libmempool
 CC				?= gcc
 LINKFLAGS		= -Xlinker --no-as-needed -Xlinker -Bdynamic -shared -Xlinker --export-dynamic -o $(LIBNAME).so
@@ -22,11 +20,12 @@ FLAGS			+= -O$(OPTIMIZE)
 #LINKFLAGS		+= -s
 endif
 
-CFLAGS		+= -std=c11 -D MULTITHREADED=$(MULTITHREADED) -D COLORED=$(COLORED) -D MALLOC=$(MALLOC) -D FREE=$(FREE) -D POSIX_MEMALIGN=$(POSIX_MEMALIGN)
+CFLAGS		+= -std=c11
 
 INCLUDE		+= $(addprefix -I,$(include_))
 LIBS		+= $(addprefix -l,$(libs_))
 LIBDIRS		+= $(addprefix -L,$(subst :, ,$(libdirs_)))
+CONFIG_H	= mempool_config.h
 
 build : src/*.o
 	$(CC) $(LINKFLAGS) $(LIBDIRS) $(LIBS) $^
@@ -34,15 +33,20 @@ build : src/*.o
 src/%.o : $(ROOT)/src/%.c config
 	cd src; $(CC) $(CFLAGS) $(FLAGS) $(INCLUDE) -c $<
 
-config : Makefile.config config/Makefile.$(BACKEND)
+config : Makefile.config config/$(BACKEND).h | cfg_header
+
+cfg_header :
+	@echo "#ifndef LIBMEMPOOL_CONFIG" > src/$(CONFIG_H); \
+	echo "#define LIBMEMPOOL_CONFIG" >> src/$(CONFIG_H); \
+	cat config/$(BACKEND).h >> src/$(CONFIG_H); \
+	echo "#define LIBMEMPOOL_MULTITHREADED " $(MULTITHREADED) >> src/$(CONFIG_H); \
+	echo "#define LIBMEMPOOL_COLORED " $(MULTITHREADED) >> src/$(CONFIG_H); \
+	echo "#endif" >> src/$(CONFIG_H)
 
 doc : FORCE
 	$(DOCTOOL) $(DOCFLAGS) `find src -name *.[c]`
 
-clean : cleanobjs
-	rm -f $(LIBNAME).so 
-
-cleanobjs : FORCE
-	rm -f `find src -name "*.o"`
+clean : FORCE
+	rm -f $(LIBNAME).so; rm -f `find src -name "*.o"`; rm src/$(CONFIG_H)
 
 FORCE :

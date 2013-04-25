@@ -1,4 +1,0 @@
-MALLOC			= malloc
-POSIX_MEMALIGN	= posix_memalign
-FREE			= free
-ALLOC_HEADER1	= <stdlib.h>
