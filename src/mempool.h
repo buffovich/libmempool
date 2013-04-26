@@ -12,6 +12,10 @@
 // we need size_t type
 #include <stdlib.h>
 
+#if LIBMEMPOOL_MULTITHREADED
+	#include <pthread.h>
+#endif
+
 
 /**
  * Map of blocks in SLAB chunk.
@@ -36,6 +40,14 @@ typedef struct _slab_t {
 	blockmap_t map; /**< Bitmap of free and occupied blocks.*/
 } slab_t;
 
+typedef struct {
+	size_t blk_sz;
+	unsigned int align;
+	void *ctag;
+	void ( *ctor )( void *obj, void *ctag );
+	void ( *dtor )( void *obj, void *ctag );
+	void ( *reinit )( void *obj, void *ctag );
+} slab_class_t;
 
 /**
  * Whether blocks in chunks is referable.
@@ -63,6 +75,10 @@ typedef struct _slab_t {
  * @see pool_alloc
  */
 typedef struct {
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_t protect;
+	#endif
+	
 	unsigned int options; /**< Allocation options. It has the sole allowed
 							option - SLAB_REFERABLE.*/
 	size_t align; /**< Requested alignment of data block.*/
@@ -70,6 +86,8 @@ typedef struct {
 					made in cache constructor.*/
 	size_t header_sz; /**< Size of chunk header with accounted padding related
 						to requested alignment and service hidden fields.*/
+	slab_class_t *slab_class;
+	
 	slab_t *head; /**< The head of the cache's chunk list.*/
 	slab_t *tail; /**< The tail of the cache's chunk list.*/
 } cache_t;
@@ -89,8 +107,7 @@ typedef struct {
  * @see pool_free
  */
 extern cache_t *pool_create( unsigned int options,
-	size_t blk_sz,
-	unsigned int align,
+	slab_class_t *slab_class,
 	unsigned int inum
 );
 

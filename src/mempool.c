@@ -22,6 +22,18 @@ typedef unsigned int counter_t;
 
 #define EMPTY_MAP ( ~ ( 0u ) )
 
+// tricky, right? here, we find the address of reference counter
+// which is placed at the very end of block
+static inline  counter_t *_get_counter_ptr( cache_t *cache, void *blk ) {
+	return ( counter_t* ) (
+		( ( char* ) blk ) +
+			(
+				( cache->blk_sz - 1 - COUNTER_SIZE ) &
+				( ~( COUNTER_ALIGN - 1 ) )
+			)
+	);
+}
+
 static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	assert( nslots <= SLOTS_NUM );
 	
@@ -44,8 +56,20 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 
 	unsigned char *cur = ( ( unsigned char * ) ret ) +
 		cache->header_sz + cache->blk_sz - 1;
-	for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
+	for( unsigned char cyc = 0;
+		cyc < ( nslots - 1 );
+		++cyc, cur += cache->blk_sz
+	)
 		*cur = cyc;
+		
+	// terminator
+	*cur = 255;
+
+	if( cache->slab_class->ctor != NULL ) {
+		cur = ( ( unsigned char * ) ret ) + cache->header_sz;
+		for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
+			cache->slab_class->ctor( cur, cache->slab_class->ctag );
+	}
 
 	return ret;
 }
@@ -60,11 +84,10 @@ static inline size_t _adjust_align( size_t blk_sz, unsigned int align ) {
 }
 
 cache_t *pool_create( unsigned int options,
-	size_t blk_sz,
-	unsigned int align,
+	slab_class_t *slab_class,
 	unsigned int inum
 ) {
-	assert( blk_sz > 0 );
+	assert( slab_class->blk_sz > 0 );
 	
 	// TODO: think about alternative schemes of allocation
 	cache_t *c = malloc( sizeof( cache_t ) );
@@ -72,24 +95,23 @@ cache_t *pool_create( unsigned int options,
 
 	c->options = options;
 
-	if( align == 0 )
-		align = sizeof( void* );
-
 	// one byte for sequence number (used to calculate slab header position)
-	blk_sz += 1;
+	c->blk_sz = slab_class->blk_sz + 1;
 	// COUNTER_SIZE bytes for number of references if relevant
 	if( options & SLAB_REFERABLE )
-		blk_sz = _adjust_align( blk_sz, COUNTER_ALIGN ) + COUNTER_SIZE;
+		c->blk_sz = _adjust_align( c->blk_sz, COUNTER_ALIGN ) + COUNTER_SIZE;
 
 	// adjust block size to match alignment
-	blk_sz = _adjust_align( blk_sz, align );
+	c->blk_sz = _adjust_align( c->blk_sz, c->align );
 
-	c->blk_sz = blk_sz;
-	c->align = align;
+	c->align = ( slab_class->align == 0 ) ? sizeof( void* ) :
+		slab_class->align;
+
+	c->slab_class = slab_class;
 
 	// by default we should allocate block with exact total size
 	// then we should consider alignment restrictions and add padding
-	c->header_sz = _adjust_align( sizeof( slab_t ), align );
+	c->header_sz = _adjust_align( sizeof( slab_t ), c->align );
 
 	if( inum > 0 ) {
 		// last bucket isn't full
@@ -115,21 +137,52 @@ cache_t *pool_create( unsigned int options,
 		c->tail = cur;
 	}
 
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_init( &( c->protect ), NULL );
+	#endif
+
 	return c;
 }
 
+void _slab_free( cache_t *cache, slab_t *slab ) {
+	if( cache->slab_class->dtor != NULL ) {
+		unsigned char *cur = ( ( unsigned char * ) slab ) + cache->header_sz;
+		unsigned char *nptr = cur + cache->blk_sz - 1;
+		for( unsigned char cyc = 0;
+			*nptr != 255;
+			++cyc, cur += cache->blk_sz, nptr += cache->blk_sz
+		)
+			cache->slab_class->dtor( cur, cache->slab_class->ctag );
+	}
+
+	free( slab );
+}
+
 void pool_free( cache_t *cache ) {
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_lock( &( cache->protect ) );
+	#endif
+	
 	slab_t *cur = cache->head, *next;
 	while( cur != NULL ) {
 		next = cur->next;
-		free( cur );
+		_slab_free( cache, cur );
 		cur = next;
 	}
 
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_unlock( &( cache->protect ) );
+		pthread_mutex_destroy( &( cache->protect ) );
+	#endif
+	
 	free( cache );
 }
 
 void pool_reap( cache_t *cache ) {
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_lock( &( cache->protect ) );
+	#endif
+	
 	slab_t *cur = cache->head, *next;
 	while( ( cur != NULL ) && ( cur->map ) )
 		if( cur->map == EMPTY_MAP ) {
@@ -140,32 +193,26 @@ void pool_reap( cache_t *cache ) {
 				cur->next->prev = cur->prev;
 				
 			next = cur->next;
-			free( cur );
+			_slab_free( cache, cur );
 			cur = next;
 		}
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_unlock( &( cache->protect ) );
+	#endif
 }
 
-// tricky, right? here, we find the address of reference counter
-// which is placed at the very end of block
-#define COUNTER_LVALUE( cache, blk ) *( ( counter_t* ) \
-	( ( ( char* ) ( blk ) ) + \
-		( ( ( cache )->blk_sz - 1 - COUNTER_SIZE ) & \
-			( ~( COUNTER_ALIGN - 1 ) ) \
-		) \
-	) \
-)
-
 static inline void _reset_refcount( cache_t *cache, void *blk ) {
-	COUNTER_LVALUE( cache, blk ) = 1;
+	*( _get_counter_ptr( cache, blk ) ) = 1;
 }
 
 static inline void _inc_refcount( cache_t *cache, void *blk ) {
-	++COUNTER_LVALUE( cache, blk );
+	++( *( _get_counter_ptr( cache, blk ) ) );
 }
 
 static inline counter_t _dec_refcount( cache_t *cache, void *blk ) {
-	assert( COUNTER_LVALUE( cache, blk ) > 0 );
-	return --COUNTER_LVALUE( cache, blk );
+	assert( *( _get_counter_ptr( cache, blk ) ) > 0 );
+	return --( *( _get_counter_ptr( cache, blk ) ) );
 }
 
 static inline void *_get_block( cache_t *c ) {
@@ -181,6 +228,10 @@ static inline void *_get_block( cache_t *c ) {
 // mark object as allocated and increment reference number if the case
 void *pool_object_alloc( cache_t *cache ) {
 	assert( cache != NULL );
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_lock( &( cache->protect ) );
+	#endif
 	
 	if( cache->head != NULL ) {
 		if( ! cache->head->map ) {
@@ -210,6 +261,13 @@ void *pool_object_alloc( cache_t *cache ) {
 	if( cache->options & SLAB_REFERABLE )
 		_reset_refcount( cache, ret );
 
+	if( cache->slab_class->reinit != NULL )
+		cache->slab_class->reinit( ret, cache->slab_class->ctag );
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_unlock( &( cache->protect ) );
+	#endif
+
 	return ret;
 }
 
@@ -217,9 +275,17 @@ void *pool_object_alloc( cache_t *cache ) {
 void *pool_object_get( cache_t *cache, void *obj ) {
 	assert( cache != NULL );
 	assert( obj != NULL );
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_lock( &( cache->protect ) );
+	#endif
 	
 	if( cache->options & SLAB_REFERABLE )
 		_inc_refcount( cache, obj );
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_unlock( &( cache->protect ) );
+	#endif
 
 	return obj;
 }
@@ -229,6 +295,10 @@ void *pool_object_get( cache_t *cache, void *obj ) {
 void *pool_object_put( cache_t *cache, void *obj ) {
 	assert( cache != NULL );
 	assert( obj != NULL );
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_lock( &( cache->protect ) );
+	#endif
 
 	if( ( !( cache->options & SLAB_REFERABLE ) ) ||
 		( !_dec_refcount( cache, obj ) )
@@ -253,6 +323,10 @@ void *pool_object_put( cache_t *cache, void *obj ) {
 
 		return NULL;
 	}
+
+	#if LIBMEMPOOL_MULTITHREADED
+		pthread_mutex_unlock( &( cache->protect ) );
+	#endif
 
 	return obj;
 }
