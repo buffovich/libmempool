@@ -40,13 +40,36 @@ typedef struct _slab_t {
 	blockmap_t map; /**< Bitmap of free and occupied blocks.*/
 } slab_t;
 
+/**
+ * SLAB chunk class definition.
+ * Each cached block in SLAB is considered as object. Each object has its class
+ * (obviously). Each class has its own destructor/constructor. ctag may be used
+ * as class identifier in the case you have the same constructor/destructor
+ * for several classes in family. reinit is used when its needed to refresh
+ * (recycle) constructed and cached object for the next use. Actually,
+ * constructor is invoked only once during object lifecycle. It's invoked only
+ * during new SLAB chunk creation for each slot. The same is true for destructor
+ * as well with the difference that destructor is invoked for each slot in SLAB
+ * chunk during SLAB eviction (reaping) or cache destruction. reinit is working
+ * horse of object recycling. Each time object is put to the cache by client,
+ * reinit will be invoked to prepare existing object for further use. It can be
+ * considered as combination of lightweight destructor with lightweight
+ * constructor. Class may not have ctor, dtor or reinit. Simple memory
+ * allocation and freeing will be performed in this case.
+ * @see cache_t
+ * @see pool_create
+ */
 typedef struct {
-	size_t blk_sz;
-	unsigned int align;
-	void *ctag;
-	void ( *ctor )( void *obj, void *ctag );
-	void ( *dtor )( void *obj, void *ctag );
-	void ( *reinit )( void *obj, void *ctag );
+	size_t blk_sz; /**< Resulting block size after adjustments and corrections
+					made in cache constructor.*/
+	size_t align; /**< Requested alignment of data block.*/
+	void *ctag; /**< Value will be passed to ctor/dtor/reinit. Can be NULL */
+	void ( *ctor )( void *obj, void *ctag ); /**< Object constructor.
+												Can be NULL. */
+	void ( *dtor )( void *obj, void *ctag ); /**< Object destructor.
+												Can be NULL. */
+	void ( *reinit )( void *obj, void *ctag ); /**< Object "recycler".
+												Can be NULL. */
 } slab_class_t;
 
 /**
@@ -70,6 +93,7 @@ typedef struct {
  * the former head becomes new tail. Hence, you will have partially filled/empty
  * chunks placed firstly and fully saturated chunks placed secondly. If block
  * is released in the one of chunks then it becomes new head as well.
+ * @see slab_class_t
  * @see pool_create
  * @see pool_free
  * @see pool_alloc
@@ -86,7 +110,7 @@ typedef struct {
 					made in cache constructor.*/
 	size_t header_sz; /**< Size of chunk header with accounted padding related
 						to requested alignment and service hidden fields.*/
-	slab_class_t *slab_class;
+	slab_class_t *slab_class; /**< Object class. */
 	
 	slab_t *head; /**< The head of the cache's chunk list.*/
 	slab_t *tail; /**< The tail of the cache's chunk list.*/
@@ -100,11 +124,12 @@ typedef struct {
  * use. Currently, options parameter controls only whether blocks will have
  * reference counter or not.
  * @param options cache options (SLAB_REFERABLE is the only allowed option)
- * @param blk_sz block size in bytes
- * @param align alignment block address should have after allocation
+ * @param slab_class SLAB object class
  * @param inum number of blocks will be reserved for immediate use
  * @return !=NULL - it will be cache object; NULL - something went wrong
  * @see pool_free
+ * @see cache_t
+ * @see slab_class_t
  */
 extern cache_t *pool_create( unsigned int options,
 	slab_class_t *slab_class,

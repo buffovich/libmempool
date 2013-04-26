@@ -22,9 +22,12 @@ typedef unsigned int counter_t;
 
 #define EMPTY_MAP ( ~ ( 0u ) )
 
-// tricky, right? here, we find the address of reference counter
-// which is placed at the very end of block
+#define SLAB_LIST_TERMINATOR 0x80
+
 static inline  counter_t *_get_counter_ptr( cache_t *cache, void *blk ) {
+	// tricky, right? here, we find the address of reference counter
+	// which is placed before sequential number which is placed at
+	// the very end of block
 	return ( counter_t* ) (
 		( ( char* ) blk ) +
 			(
@@ -54,18 +57,23 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	if( nslots < SLOTS_NUM )
 		ret->map >>= ( SLOTS_NUM - nslots );
 
+	// Let's fill sequential numbers. They are additional byte-length values
+	// placed at the very end of slot.
 	unsigned char *cur = ( ( unsigned char * ) ret ) +
 		cache->header_sz + cache->blk_sz - 1;
 	for( unsigned char cyc = 0;
-		cyc < ( nslots - 1 );
+		cyc < nslots;
 		++cyc, cur += cache->blk_sz
 	)
 		*cur = cyc;
 		
-	// terminator
-	*cur = 255;
+	// sequential number of the last allocated slot indicates that it was
+	// the last slot; used during SLAB destruction to define how many times
+	// object destructor should be invoked
+	*( cur - cache->blk_sz ) |= SLAB_LIST_TERMINATOR;
 
 	if( cache->slab_class->ctor != NULL ) {
+		// invoke constructor for each object in SLAB if the case
 		cur = ( ( unsigned char * ) ret ) + cache->header_sz;
 		for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
 			cache->slab_class->ctor( cur, cache->slab_class->ctag );
@@ -75,6 +83,8 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 }
 
 static inline size_t _adjust_align( size_t blk_sz, unsigned int align ) {
+	// slot size in this case should have such value that the next allocated
+	// slot would begin according to the align alignment
 	if( blk_sz & ( align - 1 ) ) {
 		blk_sz &= ~( align - 1 );
 		blk_sz += align;
@@ -146,23 +156,33 @@ cache_t *pool_create( unsigned int options,
 
 void _slab_free( cache_t *cache, slab_t *slab ) {
 	if( cache->slab_class->dtor != NULL ) {
+		// destroy all object if the case
 		unsigned char *cur = ( ( unsigned char * ) slab ) + cache->header_sz;
+		// this one is pointer to sequence number of the current slot
 		unsigned char *nptr = cur + cache->blk_sz - 1;
 		for( unsigned char cyc = 0;
-			*nptr != 255;
+			!( ( *nptr ) & SLAB_LIST_TERMINATOR );
 			++cyc, cur += cache->blk_sz, nptr += cache->blk_sz
 		)
 			cache->slab_class->dtor( cur, cache->slab_class->ctag );
+
+		// destroying the last one
+		cache->slab_class->dtor( cur, cache->slab_class->ctag );
 	}
 
 	free( slab );
 }
 
 void pool_free( cache_t *cache ) {
-	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_lock( &( cache->protect ) );
-	#endif
+	assert( cache != NULL );
 	
+	#if LIBMEMPOOL_MULTITHREADED
+		// what would you do if the cache is freed already? this branch a way
+		// to get an idea about tis fact
+		if( pthread_mutex_lock( &( cache->protect ) ) )
+			return;
+	#endif
+
 	slab_t *cur = cache->head, *next;
 	while( cur != NULL ) {
 		next = cur->next;
@@ -180,12 +200,14 @@ void pool_free( cache_t *cache ) {
 
 void pool_reap( cache_t *cache ) {
 	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_lock( &( cache->protect ) );
+		if( pthread_mutex_lock( &( cache->protect ) ) )
+			return;
 	#endif
 	
 	slab_t *cur = cache->head, *next;
 	while( ( cur != NULL ) && ( cur->map ) )
 		if( cur->map == EMPTY_MAP ) {
+			// OK! SLAB has no allocated blocks. It's candidate for eviction.
 			if( cur->prev != NULL )
 				cur->prev->next = cur->next;
 				
@@ -219,7 +241,10 @@ static inline void *_get_block( cache_t *c ) {
 	assert( c->head->map );
 
 	slab_t *s = c->head;
+	// find the first bit set in the map; it will be sequence number
+	// of the first unallocated slot
 	int slotn = ffs( ( int ) s->map ) - 1;
+	// set corresponding map bit to 1
 	s->map &= ~( 1u << slotn );
 	
 	return ( ( ( char *) s ) + c->header_sz + ( c->blk_sz * slotn ) );
@@ -230,17 +255,28 @@ void *pool_object_alloc( cache_t *cache ) {
 	assert( cache != NULL );
 
 	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_lock( &( cache->protect ) );
+		if( pthread_mutex_lock( &( cache->protect ) ) )
+			return NULL;
 	#endif
-	
+
+	// do we have allocated head? if not the n we should allocate it
 	if( cache->head != NULL ) {
+		// is head empty?
 		if( ! cache->head->map ) {
+			// if yes, we should elect new head with free slots
+			// does the next SLAB exists?
 			if( cache->head->next == NULL ) {
+				// No. we have just one SLAB in cache.
 				cache->head = _alloc_slab( cache, SLOTS_NUM );
 				cache->head->next = cache->tail;
 				cache->tail->prev = cache->head;
 			} else {
+				// OK. we got it.
+				// does the next one have some free slots?
 				if( cache->head->next->map ) {
+					// YEP. just elect it as new head; former head goes to
+					// the tail; thereby all full SLABs are accumulated at
+					// the end of SLAB list
 					slab_t *oldhead = cache->head,
 						*oldtail = cache->tail,
 						*newhead = oldhead->next;
@@ -248,6 +284,10 @@ void *pool_object_alloc( cache_t *cache ) {
 					( cache->tail = oldhead )->next = NULL;
 					( cache->head = newhead )->prev = NULL;
 				} else {
+					// NOPE. As far as separation of full SLABs and SLABs which
+					// have free slots is being maintaining continuosly then
+					// we won't have any chance to find something further; we
+					// should allocate new SLAB chunk and elect it as new head.
 					slab_t *news = _alloc_slab( cache, SLOTS_NUM );
 					( news->next = cache->head )->prev = news;
 					cache->head = news;
@@ -260,9 +300,6 @@ void *pool_object_alloc( cache_t *cache ) {
 	void *ret = _get_block( cache );
 	if( cache->options & SLAB_REFERABLE )
 		_reset_refcount( cache, ret );
-
-	if( cache->slab_class->reinit != NULL )
-		cache->slab_class->reinit( ret, cache->slab_class->ctag );
 
 	#if LIBMEMPOOL_MULTITHREADED
 		pthread_mutex_unlock( &( cache->protect ) );
@@ -277,7 +314,8 @@ void *pool_object_get( cache_t *cache, void *obj ) {
 	assert( obj != NULL );
 
 	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_lock( &( cache->protect ) );
+		if( pthread_mutex_lock( &( cache->protect ) ) )
+			return NULL;
 	#endif
 	
 	if( cache->options & SLAB_REFERABLE )
@@ -297,18 +335,31 @@ void *pool_object_put( cache_t *cache, void *obj ) {
 	assert( obj != NULL );
 
 	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_lock( &( cache->protect ) );
+		if( pthread_mutex_lock( &( cache->protect ) ) )
+			return NULL;
 	#endif
 
 	if( ( !( cache->options & SLAB_REFERABLE ) ) ||
 		( !_dec_refcount( cache, obj ) )
 	) {
+		if( cache->slab_class->reinit != NULL )
+			cache->slab_class->reinit( obj, cache->slab_class->ctag );
+
+		// get the sequence number
 		unsigned int pos = *( ( ( unsigned char* ) obj ) + cache->blk_sz - 1 );
+		// rid off terminator bit
+		pos &= ~ SLAB_LIST_TERMINATOR;
+
+		// calculating slab header memory address
 		slab_t *cur = ( slab_t* ) (
 			( ( unsigned char* ) obj ) - cache->blk_sz * pos - cache->header_sz
 		);
 
+		// was the slab full?
 		if( ( ! cur->map ) && ( cur != cache->head ) ) {
+			// if slab was full and it wasn't the head then
+			// we should elect it as new head to maintain separation
+			// of full SLABs and not ful ones
 			cur->prev->next = cur->next;
 
 			if( cur->next != NULL )
@@ -319,6 +370,7 @@ void *pool_object_put( cache_t *cache, void *obj ) {
 			cache->head = cur;
 		}
 
+		// set corresponding bit in map
 		cur->map |= 1u << pos;
 
 		return NULL;
