@@ -27,7 +27,9 @@ LIBS		+= $(addprefix -l,$(libs_))
 LIBDIRS		+= $(addprefix -L,$(subst :, ,$(libdirs_)))
 CONFIG_H	= mempool_config.h
 
-build : src/*.o
+objects		:= $(patsubst src/%.c,src/%.o,$(wildcard src/*.c))
+
+build : $(objects)
 	$(CC) $(LINKFLAGS) $(LIBDIRS) $(LIBS) $^
 
 src/%.o : $(ROOT)/src/%.c config
