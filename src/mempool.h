@@ -16,6 +16,9 @@
 	#include <pthread.h>
 #endif
 
+#ifdef __cplusplus
+	extern "C" {
+#endif
 
 /**
  * Map of blocks in SLAB chunk.
@@ -74,7 +77,7 @@ typedef struct {
 
 /**
  * Whether blocks in chunks is referable.
- * The sole cache creation option. Defines whether blocks in cache will have
+ * Defines whether blocks in cache will have
  * reference counter or not. If they don't then no extra space-per-block for
  * reference counter will be allocated.
  * @see cache_t
@@ -82,27 +85,41 @@ typedef struct {
 #define SLAB_REFERABLE 1
 
 /**
+ * Structure represents double linked linear list.
+ * Structure contains pointers to the head and the tail of chunks list. This 
+ * split allows performing alloc/free operations in constant time.
+ * Each time there is no more place in current head chunk (chunk is saturated),
+ * library checks the next chunk for the availability of unallocated blocks.
+ * If it's saturated as well then new chunk will be created and inserted at
+ * the head of the list. If there are some free blocks, next chunk becomes new
+ * head. In the meantime, the former head becomes new tail. Hence, you will
+ * have partially filled/empty chunks placed firstly and fully saturated chunks
+ * placed secondly. If block is released in the one of chunks then it becomes
+ * new head as well.
+ * @see slab_t
+ * @see cache_t
+ */
+typedef struct {
+	slab_t *head; /**< The head of the cache's chunk list.*/
+	slab_t *tail; /**< The tail of the cache's chunk list.*/
+} slab_list_t;
+
+typedef struct {
+	slab_list_t *( *get_slab_list )( cache_t* );
+	void ( *pool_destroy )( cache_t* );
+} cache_class_t;
+
+/**
  * Cache structure.
- * Structure contains all needed information for pointer arithmetic and
- * pointers to the head and the tail of chunks list. Such split allows
- * performing alloc/free operations in constant time. Each time there is no
- * more place in current head chunk (chunk is saturated), library checks the
- * next chunk for the availability of unallocated blocks. If it's saturated
- * as well then new chunk will be created and inserted at the head of the list.
- * If there are some free blocks, next chunk becomes new head. In the meantime,
- * the former head becomes new tail. Hence, you will have partially filled/empty
- * chunks placed firstly and fully saturated chunks placed secondly. If block
- * is released in the one of chunks then it becomes new head as well.
+ * Structure contains all common information needed for pointer arithmetic
+ * related to block/slab allocation.
  * @see slab_class_t
+ * @see slab_list_t
  * @see pool_create
  * @see pool_free
  * @see pool_alloc
  */
 typedef struct {
-	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_t protect;
-	#endif
-	
 	unsigned int options; /**< Allocation options. It has the sole allowed
 							option - SLAB_REFERABLE.*/
 	size_t align; /**< Requested alignment of data block.*/
@@ -110,10 +127,8 @@ typedef struct {
 					made in cache constructor.*/
 	size_t header_sz; /**< Size of chunk header with accounted padding related
 						to requested alignment and service hidden fields.*/
-	slab_class_t *slab_class; /**< Object class. */
-	
-	slab_t *head; /**< The head of the cache's chunk list.*/
-	slab_t *tail; /**< The tail of the cache's chunk list.*/
+	cache_class_t cache_class; /**< Cache class (type) */
+	slab_class_t slab_class; /**< Object class. */
 } cache_t;
 
 /**
@@ -123,7 +138,7 @@ typedef struct {
  * alignment. Firstly, inum blocks will be reserved in cache for immediate
  * use. Currently, options parameter controls only whether blocks will have
  * reference counter or not.
- * @param options cache options (SLAB_REFERABLE is the only allowed option)
+ * @param options cache options
  * @param slab_class SLAB object class
  * @param inum number of blocks will be reserved for immediate use
  * @return !=NULL - it will be cache object; NULL - something went wrong
@@ -131,10 +146,22 @@ typedef struct {
  * @see cache_t
  * @see slab_class_t
  */
-extern cache_t *pool_create( unsigned int options,
+extern cache_t *pool_simple_create( unsigned int options,
 	slab_class_t *slab_class,
 	unsigned int inum
 );
+
+#if LIBMEMPOOL__MULTITHREADED
+	extern cache_t *pool_lockable_create( unsigned int options,
+		slab_class_t *slab_class,
+		unsigned int inum
+	);
+
+	extern cache_t *pool_zone_create( unsigned int options,
+		slab_class_t *slab_class,
+		unsigned int inum
+	);
+#endif
 
 /**
  * Destroys created pool (or cache).
@@ -191,5 +218,9 @@ extern void *pool_object_get( cache_t *cache, void *obj );
  * 			== NULL - block was returned back to the cache (was freed)
  */
 extern void *pool_object_put( cache_t *cache, void *obj );
+
+#ifdef __cplusplus
+	}
+#endif
 
 #endif
