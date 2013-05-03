@@ -1,181 +1,3 @@
-#include <mempool.h>
-
-#include <stdlib.h>
-#include <stdalign.h>
-#include <string.h>
-#include <strings.h>
-#include <assert.h>
-#include <limits.h>
-
-typedef unsigned int counter_t;
-
-#define SLOTS_NUM ( sizeof( blockmap_t ) * 8 )
-
-#define COUNTER_ALIGN ( alignof( counter_t ) )
-
-#define COUNTER_SIZE ( sizeof( counter_t ) )
-
-#define SLAB_ALIGNMENT ( ( sizeof( void* ) > alignof( slab_t ) ) ? \
-	sizeof( void* ) : \
-	alignof( slab_t ) \
-)
-
-#define EMPTY_MAP ( ~ ( 0u ) )
-
-#define SLAB_LIST_TERMINATOR 0x80
-
-/**
- * Simple cache.
- * Structure represents simple thread-unsafe single-arena cache. Instance
- * of this structure will be returned to you if you didn't mention any
- * thread-safe flags during cache creation with pool_create.
- * @see cache_t
- * @see slab_list_t
- * @see pool_create
- * @see pool_free
- */
-
-static inline void *_bzero( size_t sz ) {
-	void *b = malloc( sz );
-	memset( c, 0, sz );
-	return b;
-}
-
-/**
- * Simple cache class.
- * Obvious thread-unaware cache.
- * @see cache_t
- * @see slab_list_t
- */
-typedef struct {
-	cache_t abstract_cache; /**< Cache header.*/
-	slab_list_t slab_list; /**< Slab list.*/
-} simple_cache_t;
-
-cache_t *pool_simple_create( unsigned int options,
-	slab_class_t *slab_class,
-	unsigned int inum
-) {
-	simple_cache_t *c = _bzero( sizeof( simple_cache_t ) );
-	_pool_init( c, slab_class, &_G_simple_cache, options, inum );
-	return c;
-}
-
-static slab_list_t *_get_simple_slab_list( cache_t *cache ) {
-	return ( ( simple_cache_t * ) from )->slab_list;
-}
-
-static void _pool_simple_destroy( cache_t *c ) {
-	_free_slab_list( &( ( ( simple_cache_t* ) c )->slab_list ) );
-}
-
-static cache_class_t _G_simple_cache = {
-	.get_slab_list = _get_simple_slab_list,
-	.pool_destroy = _pool_simple_destroy
-};
-
-#if LIBMEMPOOL_MULTITHREADED
-	/**
-	 * Locking cache.
-	 * Cache which employs the simplest synchronization mechanism - global
-	 * cache lock.
-	 * @see cache_t
-	 * @see slab_list_t
-	 * @see pool_create
-	 * @see pool_free
-	 */
-	typedef struct {
-		simple_cache_t simple_cache; /**< Inherits structure from simple
-										cache. */
-		pthread_mutex_t protect; /**< Dummy simple global mutex.*/
-	} lockable_cache_t;
-
-	cache_t *pool_lockable_create( unsigned int options,
-		slab_class_t *slab_class,
-		unsigned int inum
-	) {
-		lockable_cache_t *c = _bzero( sizeof( lockable_cache_t ) );
-
-		pthread_mutex_init( &( c->protect ), NULL );
-
-		_pool_init( c, slab_class, &_G_lockable_cache, options, inum );
-		return c;
-	}
-
-	void _pool_lockable_destroy( cache_t *c ) {
-		// what would you do if the cache is freed already? this branch a way
-		// to get an idea about tis fact
-		if( pthread_mutex_lock( &( cache->protect ) ) )
-			return;
-
-		_pool_simple_destroy( c );
-		
-		pthread_mutex_unlock( &( cache->protect ) );
-		pthread_mutex_destroy( &( cache->protect ) );
-	}
-
-	static cache_class_t _G_lockable_cache = {
-		.get_slab_list = _get_simple_slab_list,
-		.pool_destroy = _pool_lockable_destroy
-	};
-
-	/**
-	 * Thread-local cache.
-	 * Cache which employs therad local storage and thread-local slab lists
-	 * (zones) for getting advantage of lockless allocation/getting/putting
-	 * objects.
-	 * @see cache_t
-	 * @see slab_list_t
-	 * @see pool_create
-	 * @see pool_free
-	 */
-	typedef struct {
-		cache_t abstract_cache; /**< Cache header.*/
-		pthread_key_t thread_local; /**< The case if SLAB_THREAD_LOCAL_STORAGE
-										has been specified. Key for extraction
-										of pointer to thread-local allocation
-										arena.*/
-	} zoned_cache_t;
-
-	cache_t *pool_zone_create( unsigned int options,
-		slab_class_t *slab_class,
-		unsigned int inum
-	) {
-		lockable_cache_t *c = _bzero( sizeof( zoned_cache_t ) );
-		
-		pthread_key_create( &( c->thread_local ), _free_slab_list );
-		
-		_pool_init( c, slab_class, &_G_zoned_cache, options, inum );
-		return c;
-	}
-
-	static slab_list_t *_get_zoned_slab_list( cache_t *c ) {
-		pthread_key_t key = ( ( ( zoned_cache_t* ) c )->thread_local );
-		slab_list_t *sl = pthread_getspecific( key );
-		
-		if( sl == NULL ) {
-			sl = malloc( sizeof( slab_list_t ) );
-			memset( sl, 0, sizeof( slab_list_t ) );
-			pthread_setspecific( key, sl );
-		}
-
-		return sl;
-	}
-
-	void _pool_zoned_destroy( cache_t *c ) {
-		pthread_key_t key = ( ( zoned_cache_t* ) c )->thread_local;
-
-		
-
-		pthread_key_delete( key );
-	}
-
-	static cache_class_t _G_zoned_cache = {
-		.get_slab_list = _get_zoned_slab_list,
-		.pool_destroy = _pool_zoned_destroy
-	};
-#endif
-
 static void _pool_init( cache_t *cache,
 	slab_class_t *slab_class,
 	cache_class_t *cache_class,
@@ -207,30 +29,32 @@ static void _pool_init( cache_t *cache,
 	// by default we should allocate block with exact total size
 	// then we should consider alignment restrictions and add padding
 	cache->header_sz = _adjust_align( sizeof( slab_t ), cache->align );
-
-	if( inum > 0 )
-		_prepopulate_list( inum, cache, cache_class->get_slab_list( c ) );
+	cache->init_sz = inum;
 }
 
-static void _prepopulate_list( unsigned int inum,
-	cache_t *cache,
-	slab_list_t *slist
+static void _prepopulate_list( cache_t *cache,
+	slab_t **head,
+	slab_t **tail
 ) {
-	assert( inum > 0 );
+	unsigned int inum = cache->init_sz;
+	
+	if( inum == 0 )
+		inum = SLOTS_NUM;
+	
 	assert( cache != NULL );
-	assert( slist != NULL );
 
 	// last bucket isn't full
 	unsigned int last_bucket_sz = inum % SLOTS_NUM;
+	slab_t *ret = NULL;
 	int from = 0;
 	if( last_bucket_sz )
-		slist->head = _alloc_slab( cache, last_bucket_sz );
+		ret = _alloc_slab( cache, last_bucket_sz );
 	else {
 		from = 1;
-		slist->head = _alloc_slab( cache, SLOTS_NUM );
+		ret = _alloc_slab( cache, SLOTS_NUM );
 	}
 
-	slab_t *cur = slist->head;
+	slab_t *cur = ret;
 	for( int cyc = from, nbuckets = inum / SLOTS_NUM;
 		cyc < nbuckets;
 		++cyc
@@ -240,7 +64,10 @@ static void _prepopulate_list( unsigned int inum,
 		cur = cur->next;
 	}
 
-	slist->tail = cur;
+	*head = ret;
+	
+	if( tail != NULL )
+		*tail = cur;
 }
 
 static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
@@ -312,23 +139,11 @@ static inline size_t _adjust_align( size_t blk_sz, unsigned int align ) {
 	return blk_sz;
 }
 
-static void _free_slab_list( slab_list_t *sl ) {
-	slab_t *cur = sl->head, *next;
-	while( cur != NULL ) {
-		next = cur->next;
-		_slab_free( cache, cur );
-		cur = next;
-	}
-}
-
-void pool_free( cache_t *cache ) {
-	assert( cache != NULL );
-	cache->cache_class.pool_destroy( cache );
-	free( cache );
-}
-
-void _slab_free( cache_t *cache, slab_t *slab ) {
-	if( cache->slab_class->dtor != NULL ) {
+void _free_slab( slab_t *slab,
+	void ( *dtor )( void *obj, void *ctag ),
+	void *ctag
+) {
+	if( dtor != NULL ) {
 		// destroy all object if the case
 		unsigned char *cur = ( ( unsigned char * ) slab ) + cache->header_sz;
 		// this one is pointer to sequence number of the current slot
@@ -337,39 +152,13 @@ void _slab_free( cache_t *cache, slab_t *slab ) {
 			!( ( *nptr ) & SLAB_LIST_TERMINATOR );
 			++cyc, cur += cache->blk_sz, nptr += cache->blk_sz
 		)
-			cache->slab_class->dtor( cur, cache->slab_class->ctag );
+			dtor( cur, ctag );
 
 		// destroying the last one
-		cache->slab_class->dtor( cur, cache->slab_class->ctag );
+		dtor( cur, ctag );
 	}
 
 	free( slab );
-}
-
-void pool_reap( cache_t *cache ) {
-	#if LIBMEMPOOL_MULTITHREADED
-		if( pthread_mutex_lock( &( cache->protect ) ) )
-			return;
-	#endif
-	
-	slab_t *cur = cache->head, *next;
-	while( ( cur != NULL ) && ( cur->map ) )
-		if( cur->map == EMPTY_MAP ) {
-			// OK! SLAB has no allocated blocks. It's candidate for eviction.
-			if( cur->prev != NULL )
-				cur->prev->next = cur->next;
-				
-			if( cur->next != NULL )
-				cur->next->prev = cur->prev;
-				
-			next = cur->next;
-			_slab_free( cache, cur );
-			cur = next;
-		}
-
-	#if LIBMEMPOOL_MULTITHREADED
-		pthread_mutex_unlock( &( cache->protect ) );
-	#endif
 }
 
 static inline void _reset_refcount( cache_t *cache, void *blk ) {

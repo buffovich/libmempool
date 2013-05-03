@@ -17,7 +17,7 @@ FLAGS			+= -O0 -g -g$(DEBUG_FORMAT)$(DEBUG)
 else
 OPTIMIZE		?= 3
 FLAGS			+= -O$(OPTIMIZE)
-#LINKFLAGS		+= -s
+LINKFLAGS		+= -s
 endif
 
 CFLAGS		+= -std=c11

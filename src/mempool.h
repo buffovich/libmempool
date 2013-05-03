@@ -12,36 +12,9 @@
 // we need size_t type
 #include <stdlib.h>
 
-#if LIBMEMPOOL_MULTITHREADED
-	#include <pthread.h>
-#endif
-
 #ifdef __cplusplus
 	extern "C" {
 #endif
-
-/**
- * Map of blocks in SLAB chunk.
- * SLAB chunk has fixed size in blocks. The size is bit length of
- * unsigned integer on target architecture. With such simple design decision
- * we can check chunk for emptiness/saturation with one processor instruction.
- * Chunk elements are named "slots"
- * @see slab_t
- */
-typedef unsigned int blockmap_t;
-
-/**
- * SLAB chunk header.
- * Allocation in cache is performed in chunks. Each time we need extra space
- * in cache, extra chunk is allocated via allocation backend. Then, newly
- * allocated chunk will be placed at the head of chunk list of cache.
- * @see cache_t
- */
-typedef struct _slab_t {
-	struct _slab_t *next; /**< Pointer to the next chunk in list.*/
-	struct _slab_t *prev; /**< Pointer to the previous chunk in list.*/
-	blockmap_t map; /**< Bitmap of free and occupied blocks.*/
-} slab_t;
 
 /**
  * SLAB chunk class definition.
@@ -84,29 +57,10 @@ typedef struct {
  */
 #define SLAB_REFERABLE 1
 
-/**
- * Structure represents double linked linear list.
- * Structure contains pointers to the head and the tail of chunks list. This 
- * split allows performing alloc/free operations in constant time.
- * Each time there is no more place in current head chunk (chunk is saturated),
- * library checks the next chunk for the availability of unallocated blocks.
- * If it's saturated as well then new chunk will be created and inserted at
- * the head of the list. If there are some free blocks, next chunk becomes new
- * head. In the meantime, the former head becomes new tail. Hence, you will
- * have partially filled/empty chunks placed firstly and fully saturated chunks
- * placed secondly. If block is released in the one of chunks then it becomes
- * new head as well.
- * @see slab_t
- * @see cache_t
- */
-typedef struct {
-	slab_t *head; /**< The head of the cache's chunk list.*/
-	slab_t *tail; /**< The tail of the cache's chunk list.*/
-} slab_list_t;
-
 typedef struct {
 	slab_list_t *( *get_slab_list )( cache_t* );
 	void ( *pool_destroy )( cache_t* );
+	void ( *pool_evict )( cache_t* );
 } cache_class_t;
 
 /**
@@ -127,41 +81,10 @@ typedef struct {
 					made in cache constructor.*/
 	size_t header_sz; /**< Size of chunk header with accounted padding related
 						to requested alignment and service hidden fields.*/
+	unsigned int init_sz; /**< Cache initial size. */
 	cache_class_t cache_class; /**< Cache class (type) */
 	slab_class_t slab_class; /**< Object class. */
 } cache_t;
-
-/**
- * Creates new object cache (or pool).
- * Creates new object cache (or pool) which will be able to allocate
- * chuncks with specified blk_sz size  and will follow specified block
- * alignment. Firstly, inum blocks will be reserved in cache for immediate
- * use. Currently, options parameter controls only whether blocks will have
- * reference counter or not.
- * @param options cache options
- * @param slab_class SLAB object class
- * @param inum number of blocks will be reserved for immediate use
- * @return !=NULL - it will be cache object; NULL - something went wrong
- * @see pool_free
- * @see cache_t
- * @see slab_class_t
- */
-extern cache_t *pool_simple_create( unsigned int options,
-	slab_class_t *slab_class,
-	unsigned int inum
-);
-
-#if LIBMEMPOOL__MULTITHREADED
-	extern cache_t *pool_lockable_create( unsigned int options,
-		slab_class_t *slab_class,
-		unsigned int inum
-	);
-
-	extern cache_t *pool_zone_create( unsigned int options,
-		slab_class_t *slab_class,
-		unsigned int inum
-	);
-#endif
 
 /**
  * Destroys created pool (or cache).
@@ -171,7 +94,11 @@ extern cache_t *pool_simple_create( unsigned int options,
  * @see pool_create
  * @see pool_reap
  */
-extern void pool_free( cache_t *cache );
+static inline void pool_free( cache_t *cache ) {
+	assert( cache != NULL );
+	cache->cache_class.pool_destroy( cache );
+	free( cache );
+}
 
 /**
  * Evicts empty chunks.
@@ -181,7 +108,9 @@ extern void pool_free( cache_t *cache );
  * @param cache cache which empty chunks will be evicted
  * @see pool_free
  */
-extern void pool_reap( cache_t *cache );
+static inline void pool_reap( cache_t *cache ) {
+	cache->cache_class.pool_evict( cache )
+}
 
 /**
  * Allocates block from pool (cache).
