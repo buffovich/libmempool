@@ -60,14 +60,72 @@ static inline void _populate_free_list( lockless_cache_t *cache ) {
 	}
 }
 
-#define POP_FREE_LIST 1
+#define POP_FREE_LIST 1ul
 
 static inline int _is_being_poped( slab_t *s ) {
-	return ( s & POP_FREE_LIST );
+	return ( ( ( AO_t ) s ) & POP_FREE_LIST );
 }
 
-static slab_t *_reserve_top( slab_t** topp ) {
-	
+static inline slab_t *_get_regular_ptr( slab_t* s ) {
+	return ( ( ( AO_t ) s ) & ( ~POP_FREE_LIST ) );
+}
+
+static inline slab_t *_get_reserved_ptr( slab_t* s ) {
+	return ( ( ( AO_t ) s ) | POP_FREE_LIST );
+}
+
+static inline slab_t *_help_with_pop( slab_t* volatile *stack, slab_t *top ) {
+	if( _is_being_poped( top ) )
+		AO_compare_and_swap_full( stack,
+			top,
+			_get_regular_ptr( top )->next
+		);
+
+		return _get_regular_ptr( top )->next;
+	}
+
+	return top;
+}
+
+static slab_t *pop( slab_t* volatile *stack ) {
+	slab_t* volatile top;
+
+	do {
+		top = AO_load_full( stack );
+
+		if( top == NULL )
+			return NULL;
+
+		_hazard_ptr( _get_regular_ptr( top ) );
+
+		if( AO_load_full( stack ) != top ) {
+			_unhazard_ptr( _get_regular_ptr( top ) );
+			continue;
+		}
+
+		if( _help_with_pop( stack, top ) != top )
+			continue;
+
+		if ( ! AO_compare_and_swap_full( stack,
+			top,
+			_get_reserved_ptr( top )
+		)
+			continue;
+
+		_help_with_pop( stack, AO_load_full( stack ) );
+		break;
+	} while( 1 );
+
+	return top;
+}
+
+static void push( slab_t* volatile *stack, slab_t *what ) {
+	slab_t* volatile top;
+
+	do {
+		top = _help_with_pop( stack, AO_load_full( stack ) );
+		AO_store_full( &( what->next ), top );
+	} while( ! AO_compare_and_swap_full( stack, top, what ) );
 }
 
 static void _pool_lockless_evict( cache_t *c ) {
