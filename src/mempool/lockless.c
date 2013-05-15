@@ -1,9 +1,22 @@
 #include <atomic_ops.h>
 
+typedef struct _thread_list_t {
+	struct _thread_hp_t *next;
+	struct _thread_hp_t *prev;
+} thread_list_t;
+
+#define HAZARD_PTRS_K 3
+
+typedef struct _thread_hp_t {
+	thread_list_t list_header;
+	slab_t *ptrs[ HAZARD_PTRS_K ];
+} thread_hp_t;
+
 typedef struct {
 	cache_t abstract_cache; /**< Cache header.*/
 	slab_list_t slab_list; /**< Slab list.*/
-	AO_t modify;
+	pthread_key_t thread_hps;
+	thread_list_t hplist;
 } lockless_cache_t;
 
 cache_t *pool_lockless_create( unsigned int options,
@@ -29,28 +42,32 @@ static slab_list_t *_get_lockless_slab_list( cache_t *cache ) {
 	return sl;
 }
 
-static inline slab_t *_get_free_list(){
-	if( AO_load_full( &( sl->free_list ) ) == NULL ) {
-		slab_t *newhead = NULL, *newtail = NULL;
-		_prepopulate_list( cache, &newfl, &newtail );
-		
+static inline void _populate_free_list( lockless_cache_t *cache ) {
+	assert( cache != NULL );
+	slab_list_t *sl = &( cache->slab_list );
+
+	slab_t *newhead = NULL, *newtail = NULL;
+	_prepopulate_list( cache, &newhead, &newtail );
+
+	if( ! AO_compare_and_swap_full( &( sl->free_list ), NULL, newhead ) ) {
 		slab_t *oldfl;
 		do {
-			do {
-				oldfl = AO_load_full( &( sl->free_list ) );
-			} while(
-				! AO_compare_and_swap_full( &( sl->free_list ), oldfl, NULL )
-			);
-
+			oldfl = AO_load_full( &( sl->free_list ) );
 			AO_store_full( &( newtail->next ), oldfl );
-			AO_store_full( &( oldfl->prev ), newtail );
-			for( ; newtail->next != NULL; newtail = newtail->next ) ;
 		} while(
-			! AO_compare_and_swap_full( &( sl->free_list ), NULL, newhead )
+			! AO_compare_and_swap_full( &( sl->free_list ), oldfl, newhead )
 		)
 	}
+}
 
-	return AO_load_full( &( sl->free_list ) );
+#define POP_FREE_LIST 1
+
+static inline int _is_being_poped( slab_t *s ) {
+	return ( s & POP_FREE_LIST );
+}
+
+static slab_t *_reserve_top( slab_t** topp ) {
+	
 }
 
 static void _pool_lockless_evict( cache_t *c ) {
@@ -64,7 +81,7 @@ static void _pool_lockless_evict( cache_t *c ) {
 	} while(
 		! AO_compare_and_swap_full( &( sl->free_list ), flist, NULL )
 	);
-	
+
 	_purge_slab_chain( flist, c->slab_class.dtor, c->slab_class.ctag );
 }
 

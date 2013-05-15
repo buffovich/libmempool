@@ -36,30 +36,14 @@ static void _prepopulate_list( cache_t *cache,
 	slab_t **head,
 	slab_t **tail
 ) {
-	unsigned int inum = cache->init_sz;
-	
-	if( inum == 0 )
-		inum = SLOTS_NUM;
-	
 	assert( cache != NULL );
 
-	// last bucket isn't full
-	unsigned int last_bucket_sz = inum % SLOTS_NUM;
-	slab_t *ret = NULL;
-	int from = 0;
-	if( last_bucket_sz )
-		ret = _alloc_slab( cache, last_bucket_sz );
-	else {
-		from = 1;
-		ret = _alloc_slab( cache, SLOTS_NUM );
-	}
+	unsigned int nbuckets = cache->init_sz / SLOTS_NUM;
 
+	slab_t *ret = _alloc_slab( cache );
 	slab_t *cur = ret;
-	for( int cyc = from, nbuckets = inum / SLOTS_NUM;
-		cyc < nbuckets;
-		++cyc
-	) {
-		cur->next = _alloc_slab( cache, SLOTS_NUM );
+	for( unsigned int cyc = 0; cyc < nbuckets; ++cyc ) {
+		cur->next = _alloc_slab( cache );
 		cur->next->prev = cur;
 		cur = cur->next;
 	}
@@ -70,7 +54,7 @@ static void _prepopulate_list( cache_t *cache,
 		*tail = cur;
 }
 
-static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
+static inline slab_t *_alloc_slab( cache_t *cache ) {
 	assert( nslots <= SLOTS_NUM );
 	assert( nslots > 0 );
 	
@@ -80,22 +64,19 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	assert(
 		posix_memalign( ( void** ) &ret,
 			SLAB_ALIGNMENT,
-			cache->header_sz + cache->blk_sz * nslots
+			cache->header_sz + cache->blk_sz * SLOTS_NUM
 		) == 0
 	);
 
 	memset( ret, 0, sizeof( slab_t ) );
 	ret->map = EMPTY_MAP;
 
-	if( nslots < SLOTS_NUM )
-		ret->map >>= ( SLOTS_NUM - nslots );
-
 	// Let's fill sequential numbers. They are additional byte-length values
 	// placed at the very end of slot.
 	unsigned char *cur = ( ( unsigned char * ) ret ) +
 		cache->header_sz + cache->blk_sz - 1;
 	for( unsigned char cyc = 0;
-		cyc < nslots;
+		cyc < SLOTS_NUM;
 		++cyc, cur += cache->blk_sz
 	)
 		*cur = cyc;
@@ -108,7 +89,10 @@ static inline slab_t *_alloc_slab( cache_t *cache, unsigned int nslots ) {
 	if( cache->slab_class.ctor != NULL ) {
 		// invoke constructor for each object in SLAB if the case
 		cur = ( ( unsigned char * ) ret ) + cache->header_sz;
-		for( unsigned char cyc = 0; cyc < nslots; ++cyc, cur += cache->blk_sz )
+		for( unsigned char cyc = 0;
+			cyc < SLOTS_NUM;
+			++cyc, cur += cache->blk_sz
+		)
 			cache->slab_class.ctor( cur, cache->slab_class.ctag );
 	}
 
