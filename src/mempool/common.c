@@ -9,17 +9,7 @@
 #include <assert.h>
 #include <limits.h>
 
-#if LIBMEMPOOL_LOCKLESS
-	typedef AO_t counter_t;
-#else
-	typedef unsigned int counter_t;
-#endif
-
 #define SLOTS_NUM ( sizeof( unsigned int ) * 8 )
-
-#define COUNTER_ALIGN ( alignof( counter_t ) )
-
-#define COUNTER_SIZE ( sizeof( counter_t ) )
 
 #define SLAB_ALIGNMENT ( ( sizeof( void* ) > alignof( slab_t ) ) ? \
 	sizeof( void* ) : \

@@ -19,10 +19,15 @@
  */
 #if LIBMEMPOOL_LOCKLESS
 	typedef AO_t blockmap_t;
+	typedef AO_t counter_t;
 #else
 	typedef unsigned int blockmap_t;
+	typedef unsigned int counter_t;
 #endif
 
+#define COUNTER_ALIGN ( alignof( counter_t ) )
+
+#define COUNTER_SIZE ( sizeof( counter_t ) )
 
 /**
  * SLAB chunk header.
@@ -81,6 +86,19 @@ extern void _free_slab_list( slab_list_t *sl,
 	void ( *dtor )( void *obj, void *ctag ),
 	void *ctag
 );
+
+static inline  counter_t *_get_counter_ptr( cache_t *cache, void *blk ) {
+	// tricky, right? here, we find the address of reference counter
+	// which is placed before sequential number which is placed at
+	// the very end of block
+	return ( counter_t* ) (
+		( ( char* ) blk ) +
+			(
+				( cache->blk_sz - 1 - COUNTER_SIZE ) &
+				( ~( COUNTER_ALIGN - 1 ) )
+			)
+	);
+}
 
 #ifdef __cplusplus
 	}

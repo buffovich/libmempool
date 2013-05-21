@@ -99,19 +99,6 @@ static inline slab_t *_alloc_slab( cache_t *cache ) {
 	return ret;
 }
 
-static inline  counter_t *_get_counter_ptr( cache_t *cache, void *blk ) {
-	// tricky, right? here, we find the address of reference counter
-	// which is placed before sequential number which is placed at
-	// the very end of block
-	return ( counter_t* ) (
-		( ( char* ) blk ) +
-			(
-				( cache->blk_sz - 1 - COUNTER_SIZE ) &
-				( ~( COUNTER_ALIGN - 1 ) )
-			)
-	);
-}
-
 static inline size_t _adjust_align( size_t blk_sz, unsigned int align ) {
 	// slot size in this case should have such value that the next allocated
 	// slot would begin according to the align alignment
